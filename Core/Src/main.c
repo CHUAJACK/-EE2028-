@@ -10,10 +10,18 @@
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_accelero.h"
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_tsensor.h"
 #include "stdio.h"
-#define acceleration_count_target 2// accel count = period/500ms
-#define temperature_count_target 3 // temperature count target = period/500ms
+#define MG_TO_GMS2 9.8/1000.0f
+
 
 extern void initialise_monitor_handles(void);	// for semi-hosting support (printf)
+
+
+enum droneMode {
+	standby = 0 ,
+	battle 	= 1,
+	battleTheLastOf2028 = 2
+};
+
 
 int main(void)
 {
@@ -24,36 +32,44 @@ int main(void)
 
 	/* Peripheral initializations using BSP functions */
 	BSP_ACCELERO_Init();
+	BSP_GYRO_Init();
+	BSP_MAGNETO_Init();
 	BSP_TSENSOR_Init();
-	uint16_t accel_count = 0;
-	uint16_t temp_count = 0;
+	BSP_PSENSOR_Init();
+	BSP_HSENSOR_Init();
+	uint32_t lastSensorTimeTick = HAL_GetTick();
+	uint32_t tickStart;
 	while (1)
 	{
+		tickStart = HAL_GetTick();  //milliseconds
 
-		accel_count+=1;
-		temp_count+=1;
-		if (accel_count== acceleration_count_target ){
-			accel_count=0;
+		//read sensor messages
+		if ((tickStart-lastSensorTimeTick)>=1000){
+			float tempData;
+			tempData = BSP_TSENSOR_ReadTemp();			// read temperature sensor
+
 			float accel_data[3];
 			int16_t accel_data_i16[3] = { 0 };			// array to store the x, y and z readings.
 			BSP_ACCELERO_AccGetXYZ(accel_data_i16);		// read accelerometer
-			// the function above returns 16 bit integers which are acceleration in mg (9.8/1000 m/s^2).
-			// Converting to float to print the actual acceleration.
-			accel_data[0] = (float)accel_data_i16[0] * (9.8/1000.0f);
-			accel_data[1] = (float)accel_data_i16[1] * (9.8/1000.0f);
-			accel_data[2] = (float)accel_data_i16[2] * (9.8/1000.0f);
-			printf("Accel X : %f; Accel Y : %f; Accel Z : %f\n", accel_data[0], accel_data[1], accel_data[2]);
+			accel_data[0] = (float)accel_data_i16[0] * MG_TO_GMS2;
+			accel_data[1] = (float)accel_data_i16[1] * MG_TO_GMS2;
+			accel_data[2] = (float)accel_data_i16[2] * MG_TO_GMS2;
+
+			float pressureData ;
+			pressureData = BSP_PSENSOR_ReadPressure();  //pressure reading in hectopascal
+
+			float gyroData[3];
+			BSP_GYRO_GetXYZ(gyroData);   //gyrodata x y z in mdps
+
+			float humidityData;
+			humidityData = BSP_HSENSOR_ReadHumidity();   //humidity data in %rh
+
+			int16_t magnetoData[3];
+			BSP_MAGNETO_GetXYZ(magnetoData); //magneto data in milligaus
+
+			lastSensorTimeTick = HAL_GetTick();  //update last tick
+			printf("T: %f (C), P: %f (hPa), H: %f (rh)\nAx: %f; Ay: %f; Az: %f\nAx: %f; Ay: %f; Az: %f\nMx: %d; My: %d; Mz: %d\n", tempData, pressureData, humidityData, accel_data[0], accel_data[1], accel_data[2], gyroData[0], gyroData[1], gyroData[2], magnetoData[0], magnetoData[1], magnetoData[2]);
 		}
-		if (temp_count== temperature_count_target ){
-			temp_count=0;
-			float temp_data;
-			temp_data = BSP_TSENSOR_ReadTemp();			// read temperature sensor
-			printf("Temperature : %f\n", temp_data);
-
-		}
-
-
-		HAL_Delay(500);	// read once a ~second.
 
 	}
 

@@ -1,0 +1,15 @@
+2028 ASSIGNMENT 2
+
+
+enum mode
+
+if mode == STANDBY:
+	#TELEMETRY READING
+		READ SENSOR DATA
+		IF SENSORS VIOLATE:
+			sendInvalidDataUart()
+		sendTelemetryData()
+	
+	
+buttonPressInterupt():
+	
