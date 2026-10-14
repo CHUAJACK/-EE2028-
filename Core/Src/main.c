@@ -14,7 +14,8 @@
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_psensor.h"
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_hsensor.h"
 #include "stdio.h"
-#include <stdbool.h>#include "math.h"
+#include <stdbool.h>
+#include "math.h"
 
 
 
@@ -31,6 +32,33 @@
 
 extern void initialise_monitor_handles(void);	// for semi-hosting support (printf)
 static void MX_GPIO_Init(void);
+
+//-----------LASERRRRRRRRRR----------//
+#define LASER_CHARGE_PER_PRESS 3
+#define LASER_MAX 10
+#define LASER_COST 5
+
+int laserCharge = 0;
+
+void chargeLaser() {
+	laserCharge += LASER_CHARGE_PER_PRESS;
+	if (laserCharge > LASER_MAX) {
+		laserCharge = LASER_MAX;
+	}
+	printf("Laser Charging! energy: %d/10\r\n", laserCharge);
+}
+
+void shootLaser() {
+	if (laserCharge < LASER_COST) {
+		printf("Insufficient power! energy: %d/10\r\n", laserCharge);
+		return;
+	} else {
+		laserCharge -= LASER_COST;
+	}
+	printf("Laser Fired! energy: %d/10\r\n", laserCharge);
+}
+
+//-----------LASERRRRRRRRRR----------//
 
 //-----------Determine Sensor Validity----------//
 //setting the thresholds
@@ -91,6 +119,10 @@ int determineSensorValidity(float temperature, float pressure, float humidity, f
 	}
 	return violations;
 }
+
+//-----------Determine Sensor Validity----------//
+
+
 float roll;
 float pitch;
 float yaw;
@@ -128,17 +160,25 @@ HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	buttonLastPress = HAL_GetTick();
 }
 
+float measurePressure() {
+	float groundPressure = 0;
+	for (int i = 0; i < 10; i++) {
+	    groundPressure = groundPressure + BSP_PSENSOR_ReadPressure();
+	    HAL_Delay(50);
+	}
+	return groundPressure / 10;
+
+}
+
 uint32_t processButton(uint32_t currentTick){
 	if (buttonPressCount == 0) return 0;
 	//if its pressed only once, wait for the timeout before processing so that the second press comes in
 	if (buttonPressCount == 1 && (currentTick-buttonLastPress) > BUTTON_DOUBLE_PRESS_TIME){
-		printf("button 1");
 		buttonPressCount = 0;
 		return 1;
 	}
 	//if its pressed twice, process it immediately
 	if (buttonPressCount == 2){
-		printf("button 2");
 		buttonPressCount = 0;
 		return 2;
 	}
@@ -224,15 +264,11 @@ int main(void)
 	BSP_HSENSOR_Init();
 	BSP_LED_Init(LED2);
 
-	//measure the average ground pressure and find lower and upper bound
-	float groundPressure = 0;
-	for (int i = 0; i < 10; i++) {
-    	groundPressure = groundPressure + BSP_PSENSOR_ReadPressure();
-    	HAL_Delay(50);
-	}
-	groundPressure = groundPressure / 10;
+	//find lower and upper bound for pressure
+	float groundPressure = measurePressure();
 	pressureLow  = groundPressure - PRESSURE_DROP_FOR_MAX_HEIGHT;
 	pressureHigh = groundPressure + PRESSURE_RISE_FOR_MIN_HEIGHT;	
+
 	mahony_t mahonyFilter;
 
 	mahony_init(&mahonyFilter,M_KP, M_KI);
@@ -268,7 +304,11 @@ int main(void)
 		}
 
 		if (droneMode == standby) {
-		if (buttonPressResult == 2) {droneMode=battle;continue;} //transition to battle mode
+		if (buttonPressResult == 2) {
+			//transition to battle mode
+			printf("BATTLE MODE\r\n");
+			droneMode=battle;continue;
+		}
 
 		if ((tickStart-lastSensorTimeTick)>=500){
 				readTPHSensorData(&tempData, &pressureData, &humidityData);
@@ -285,7 +325,14 @@ int main(void)
 		}
 		} else{
 			if (droneMode == battle){
-				if (buttonPressResult == 2) {droneMode=standby;continue;}
+				if(buttonPressResult == 1) {
+					chargeLaser();
+					shootLaser();
+				}
+				if (buttonPressResult == 2) {
+					printf("STANDBY MODE\r\n");
+					droneMode=standby;continue;
+				}
 				if (roll > 120 || roll < -120) {droneMode=battleTheLastOf2028;lastOf2028StartTick=tickStart;continue;}
 			} else {
 				//last of 2028 drone mode
