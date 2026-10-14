@@ -9,8 +9,13 @@
 #include "main.h"
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_accelero.h"
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_tsensor.h"
+#include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_gyro.h"
+#include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_magneto.h"
+#include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_psensor.h"
+#include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_hsensor.h"
 #include "stdio.h"
-#include <stdbool.h>
+#include <stdbool.h>#include "math.h"
+
 
 
 #define MG_TO_GMS2 9.8/1000.0f
@@ -27,6 +32,65 @@
 extern void initialise_monitor_handles(void);	// for semi-hosting support (printf)
 static void MX_GPIO_Init(void);
 
+//-----------Determine Sensor Validity----------//
+//setting the thresholds
+//temperature in degC: safe operating range for Li-ion battery and electronics
+#define TEMP_LOW       0.0f
+#define TEMP_HIGH      45.0f
+//humidity in %RH: comfortable range for humans
+#define HUMIDITY_LOW   30.0f
+#define HUMIDITY_HIGH  70.0f
+//acceleration in g: below 0.5*9.8 = free fall, above 2*9.8 = collision
+#define ACCEL_LOW      0.5f
+#define ACCEL_HIGH     2.0f
+//rotation in rads-1: above 250 dps = drone is tumbling
+#define GYRO_LOW       0.0f * MDPS_TO_RADS
+#define GYRO_HIGH       250000.0f * MDPS_TO_RADS
+//magnetic field in gauss: Earth's field is about 0.25 to 0.65 gauss
+#define MAGNETO_LOW    0.20f
+#define MAGNETO_HIGH   2.50f
+
+
+//for pressure, the pressure difference relative to takeoff is calculated (range is -10m to 120m) because pressure differs too much 
+//pressure drops about 0.12 hPa for every metre the drone climbs, so
+#define PRESSURE_DROP_FOR_MAX_HEIGHT  14.4f
+#define PRESSURE_RISE_FOR_MIN_HEIGHT  1.2f
+
+float pressureLow;
+float pressureHigh;
+
+//checks one sensor reading against its low and high limit
+//prints a message and returns 1 if the reading is out of range, otherwise returns 0
+int checkOneSensor(char *name, float reading, float low, float high, char *unit)
+{
+	if (reading > high) {
+		printf("%s: %.2f (%s), exceeds threshold of %.2f (%s).\r\n", name, reading, unit, high, unit);
+		return 1;
+	}
+	if (reading < low) {
+		printf("%s: %.2f (%s), is below threshold of %.2f (%s).\r\n", name, reading, unit, low, unit);
+		return 1;
+	}
+	return 0;
+}
+
+//checks all six sensors
+int determineSensorValidity(float temperature, float pressure, float humidity, float accel, float gyro, float magneto)
+{
+	int violations = 0;
+	violations = violations + checkOneSensor("T", temperature, TEMP_LOW, TEMP_HIGH, "degC");
+	violations = violations + checkOneSensor("P", pressure, pressureLow, pressureHigh, "hPa");
+	violations = violations + checkOneSensor("H", humidity, HUMIDITY_LOW, HUMIDITY_HIGH, "%RH");
+	violations = violations + checkOneSensor("A", accel, ACCEL_LOW, ACCEL_HIGH, "m/s^2");
+	violations = violations + checkOneSensor("G", gyro, GYRO_LOW, GYRO_HIGH, "dps");
+	violations = violations + checkOneSensor("M", magneto, MAGNETO_LOW, MAGNETO_HIGH, "gauss");
+	
+	//checks if there is any violations
+	if (violations == 0) {
+		printf("All sensor readings are normal.\r\n");
+	}
+	return violations;
+}
 float roll;
 float pitch;
 float yaw;
@@ -135,11 +199,8 @@ void processMahonyFilter(mahony_t* mahonyFilter, float accelG[3], float magnetoD
 }
 
 void readTPHSensorData(float* tempData, float* pressureData, float* humidityData){
-
 	*tempData = BSP_TSENSOR_ReadTemp();			// read temperature sensor
-
 	*pressureData = BSP_PSENSOR_ReadPressure();  //pressure reading in hectopascal
-
 	*humidityData = BSP_HSENSOR_ReadHumidity();   //humidity data in %rh
 }
 
@@ -163,6 +224,15 @@ int main(void)
 	BSP_HSENSOR_Init();
 	BSP_LED_Init(LED2);
 
+	//measure the average ground pressure and find lower and upper bound
+	float groundPressure = 0;
+	for (int i = 0; i < 10; i++) {
+    	groundPressure = groundPressure + BSP_PSENSOR_ReadPressure();
+    	HAL_Delay(50);
+	}
+	groundPressure = groundPressure / 10;
+	pressureLow  = groundPressure - PRESSURE_DROP_FOR_MAX_HEIGHT;
+	pressureHigh = groundPressure + PRESSURE_RISE_FOR_MIN_HEIGHT;	
 	mahony_t mahonyFilter;
 
 	mahony_init(&mahonyFilter,M_KP, M_KI);
@@ -202,6 +272,13 @@ int main(void)
 
 		if ((tickStart-lastSensorTimeTick)>=500){
 				readTPHSensorData(&tempData, &pressureData, &humidityData);
+				//converts x y z values to a single vector
+				float accelTotal = sqrtf(accelG[0]*accelG[0] + accelG[1]*accelG[1] + accelG[2]*accelG[2]);
+				float gyroTotal = sqrtf(gyroDataRadS[0]*gyroDataRadS[0] + gyroDataRadS[1]*gyroDataRadS[1] + gyroDataRadS[2]*gyroDataRadS[2]);
+				float magnetoTotal = sqrtf((float)magnetoDataFloat[0]*magnetoDataFloat[0] + (float)magnetoDataFloat[1]*magnetoDataFloat[1] + (float)magnetoDataFloat[2]*magnetoDataFloat[2]) / 1000;
+				//checks the sensor validity
+				determineSensorValidity(tempData, pressureData, humidityData, accelTotal, gyroTotal, magnetoTotal);
+			
 				lastSensorTimeTick = HAL_GetTick();  //update last tick
 				//printf("T: %f (C), P: %f (hPa), H: %f (rh)\nAx: %d; Ay: %d; Az: %d (g)\nGx: %d; Gy: %d; Gz: %d (rads-1)\nMx: %d; My: %d; Mz: %d  (mG)\n",
 				//tempData, pressureData, humidityData, accel_data[0], accel_data[1], accel_data[2], gyroData[0], gyroData[1], gyroData[2], magnetoData[0], magnetoData[1], magnetoData[2]);
