@@ -16,6 +16,7 @@
 #include "stdio.h"
 #include <stdbool.h>
 #include "math.h"
+#include "string.h"
 
 
 
@@ -46,6 +47,9 @@ void chargeLaser() {
 		laserCharge = LASER_MAX;
 	}
 	printf("Laser Charging! energy: %d/10\r\n", laserCharge);
+	char messageToUART[60];
+	sprintf(messageToUART, "Laser Charging! energy: %d/10\r\n", laserCharge);
+	sendUART(messageToUART);
 }
 
 void shootLaser() {
@@ -56,6 +60,9 @@ void shootLaser() {
 		laserCharge -= LASER_COST;
 	}
 	printf("Laser Fired! energy: %d/10\r\n", laserCharge);
+	char messageToUART[60];
+	sprintf(messageToUART, "Laser Fired! energy: %d/10\r\n", laserCharge);
+	sendUART(messageToUART);
 }
 
 //-----------LASERRRRRRRRRR----------//
@@ -87,20 +94,32 @@ void shootLaser() {
 float pressureLow;
 float pressureHigh;
 
+UART_HandleTypeDef huart1;
+
 //checks one sensor reading against its low and high limit
 //prints a message and returns 1 if the reading is out of range, otherwise returns 0
 int checkOneSensor(char *name, float reading, float low, float high, char *unit)
 {
+	char messageToUART[100];
 	if (reading > high) {
-		printf("%s: %.2f (%s), exceeds threshold of %.2f (%s).\r\n", name, reading, unit, high, unit);
-		return 1;
+//		printf("%s: %.2f (%s), exceeds threshold of %.2f (%s).\r\n", name, reading, unit, high, unit);
+		sprintf(messageToUART, "%s: %.2f (%s), exceeds threshold of %.2f (%s).\r\n",name, reading, unit, high, unit);
 	}
-	if (reading < low) {
-		printf("%s: %.2f (%s), is below threshold of %.2f (%s).\r\n", name, reading, unit, low, unit);
-		return 1;
+	else if (reading < low) {
+//		printf("%s: %.2f (%s), is below threshold of %.2f (%s).\r\n", name, reading, unit, low, unit);
+		sprintf(messageToUART, "%s: %.2f (%s), is below threshold of %.2f (%s).\r\n",name, reading, unit, low, unit);
+	}else{
+		return 0;
 	}
-	return 0;
+	sendUART(messageToUART);
+	return 1;
 }
+
+void sendUART(char* message){
+	uint16_t messageSize=strlen(message);
+	HAL_UART_Transmit(&huart1, (uint8_t*)message, messageSize,0xFFFF);
+}
+
 
 //checks all six sensors
 int determineSensorValidity(float temperature, float pressure, float humidity, float accel, float gyro, float magneto)
@@ -115,13 +134,13 @@ int determineSensorValidity(float temperature, float pressure, float humidity, f
 	
 	//checks if there is any violations
 	if (violations == 0) {
-		printf("All sensor readings are normal.\r\n");
+		char messageToUART[]="All sensor readings are normal.\r\n";
+		sendUART(messageToUART);
 	}
 	return violations;
 }
 
 //-----------Determine Sensor Validity----------//
-
 
 float roll;
 float pitch;
@@ -134,6 +153,37 @@ typedef enum {
 	destroyed = 100
 } droneModes;
 
+
+static void UART1_Init(void)
+{
+	/* Pin configuration for UART. BSP_COM_Init() can do this automatically */
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	__HAL_RCC_USART1_CLK_ENABLE();
+
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+	GPIO_InitStruct.Pin = GPIO_PIN_7|GPIO_PIN_6;
+	GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+	/* Configuring UART1 */
+	huart1.Instance = USART1;
+	huart1.Init.BaudRate = 115200;
+	huart1.Init.WordLength = UART_WORDLENGTH_8B;
+	huart1.Init.StopBits = UART_STOPBITS_1;
+	huart1.Init.Parity = UART_PARITY_NONE;
+	huart1.Init.Mode = UART_MODE_TX_RX;
+	huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+	huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+	huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+	huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+	if (HAL_UART_Init(&huart1) != HAL_OK)
+	{
+		while(1);
+	}
+
+}
 //LED2 IS PB14
 
 
@@ -253,6 +303,7 @@ int main(void)
 	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
 	HAL_Init();
 	MX_GPIO_Init();
+	UART1_Init();
 
 	/* Peripheral initializations using BSP functions */
 
@@ -282,10 +333,12 @@ int main(void)
 
 	uint32_t lastImuTick=HAL_GetTick();
 	uint32_t lastOf2028StartTick = 0;
+	uint32_t lastOf2028PrintTick = 0;
 
 	uint32_t lastSensorTimeTick = HAL_GetTick();
 	uint32_t ledLastToggleTime = HAL_GetTick();
 	uint32_t tickStart;
+
 	uint32_t buttonPressResult;
 	while (1)
 	{
@@ -307,6 +360,7 @@ int main(void)
 		if (buttonPressResult == 2) {
 			//transition to battle mode
 			printf("BATTLE MODE\r\n");
+			sendUART("BATTLE MODE\r\n");
 			droneMode=battle;continue;
 		}
 
@@ -318,10 +372,7 @@ int main(void)
 				float magnetoTotal = sqrtf((float)magnetoDataFloat[0]*magnetoDataFloat[0] + (float)magnetoDataFloat[1]*magnetoDataFloat[1] + (float)magnetoDataFloat[2]*magnetoDataFloat[2]) / 1000;
 				//checks the sensor validity
 				determineSensorValidity(tempData, pressureData, humidityData, accelTotal, gyroTotal, magnetoTotal);
-			
 				lastSensorTimeTick = HAL_GetTick();  //update last tick
-				//printf("T: %f (C), P: %f (hPa), H: %f (rh)\nAx: %d; Ay: %d; Az: %d (g)\nGx: %d; Gy: %d; Gz: %d (rads-1)\nMx: %d; My: %d; Mz: %d  (mG)\n",
-				//tempData, pressureData, humidityData, accel_data[0], accel_data[1], accel_data[2], gyroData[0], gyroData[1], gyroData[2], magnetoData[0], magnetoData[1], magnetoData[2]);
 		}
 		} else{
 			if (droneMode == battle){
@@ -331,20 +382,34 @@ int main(void)
 				}
 				if (buttonPressResult == 2) {
 					printf("STANDBY MODE\r\n");
+					sendUART("STANDBY MODE\r\n");
 					droneMode=standby;continue;
 				}
-				if (roll > 120 || roll < -120) {droneMode=battleTheLastOf2028;lastOf2028StartTick=tickStart;continue;}
+				if (roll > 120 || roll < -120) {
+					droneMode=battleTheLastOf2028;
+					lastOf2028StartTick=tickStart;
+					sendUART("Drone is under attack! entering last of 2028 mode\n");
+					continue;
+				}
 			} else {
 				//last of 2028 drone mode
-				if (tickStart-lastOf2028StartTick > 10000){droneMode=destroyed;break;}
-				if (buttonPressResult == 2) {droneMode=battle;continue;}
+				if (tickStart-lastOf2028StartTick > 10000){
+					sendUART("Kaboom!");
+					droneMode=destroyed;break;
+				}
+				if (tickStart-lastOf2028PrintTick > 1000){
+					uint32_t lastOf2028PrintNo = 10;
+					lastOf2028PrintTick = tickStart;
+					char messageToUART[60];
+					sprintf(messageToUART, "Drone is self destructing in ...%d\n", lastOf2028PrintNo);
+					sendUART(messageToUART);
+				}
 
+				if (buttonPressResult == 2) {droneMode=battle;continue;sendUART("Drone is Rescued.. returning to battle mode");}
 			}
 		}
-
 	}
 	while (1){
-
 	}
 
 }
