@@ -17,12 +17,17 @@
 #include <stdbool.h>
 #include "math.h"
 #include "string.h"
+#include "ssd1306.h"
+#include "ssd1306_fonts.h"
+
 
 
 
 #define MG_TO_GMS2 9.8/1000.0f
 #define BUTTON_DOUBLE_PRESS_TIME 500
-
+#define SWITCH_I2C_ADDR   (0x03 << 1)   //5-way switch I2C address
+#define KEY_LEFT   1
+#define KEY_RIGHT  3
 #define M_KP	8.0
 #define M_KI 	0.05
 #define MDPS_TO_RADS 2*3.1415926535/180000.0f
@@ -122,17 +127,20 @@ void sendUART(char* message){
 
 
 //checks all six sensors
+int sensorOutOfRange[6] = {0};   //1 = out of threshold, 0 = within threshold
+char *sensorLabels[6] = {"TEMP", "PRES", "HUM", "ACC", "GYRO", "MAG"};
 int determineSensorValidity(float temperature, float pressure, float humidity, float accel, float gyro, float magneto)
 {
-	int violations = 0;
-	violations = violations + checkOneSensor("T", temperature, TEMP_LOW, TEMP_HIGH, "degC");
-	violations = violations + checkOneSensor("P", pressure, pressureLow, pressureHigh, "hPa");
-	violations = violations + checkOneSensor("H", humidity, HUMIDITY_LOW, HUMIDITY_HIGH, "%RH");
-	violations = violations + checkOneSensor("A", accel, ACCEL_LOW, ACCEL_HIGH, "m/s^2");
-	violations = violations + checkOneSensor("G", gyro, GYRO_LOW, GYRO_HIGH, "dps");
-	violations = violations + checkOneSensor("M", magneto, MAGNETO_LOW, MAGNETO_HIGH, "gauss");
+	//check each sensor and remember the result (1 = out of range, 0 = OK)
+	sensorOutOfRange[0] = checkOneSensor("T", temperature, TEMP_LOW, TEMP_HIGH, "degC");
+	sensorOutOfRange[1] = checkOneSensor("P", pressure, pressureLow, pressureHigh, "hPa");
+	sensorOutOfRange[2] = checkOneSensor("H", humidity, HUMIDITY_LOW, HUMIDITY_HIGH, "%RH");
+	sensorOutOfRange[3] = checkOneSensor("A", accel, ACCEL_LOW, ACCEL_HIGH, "g");
+	sensorOutOfRange[4] = checkOneSensor("G", gyro, GYRO_LOW, GYRO_HIGH, "rad/s");
+	sensorOutOfRange[5] = checkOneSensor("M", magneto, MAGNETO_LOW, MAGNETO_HIGH, "gauss");
 	
 	//checks if there is any violations
+	int violations = sensorOutOfRange[0] + sensorOutOfRange[1] + sensorOutOfRange[2] + sensorOutOfRange[3] + sensorOutOfRange[4] + sensorOutOfRange[5];
 	if (violations == 0) {
 		char messageToUART[]="All sensor readings are normal.\r\n";
 		sendUART(messageToUART);
@@ -183,6 +191,69 @@ static void UART1_Init(void)
 		while(1);
 	}
 
+}
+I2C_HandleTypeDef hi2c1;
+
+//sets up I2C1 on PB8 (SCL) and PB9 (SDA)
+static void I2C1_Init(void)
+{
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	__HAL_RCC_I2C1_CLK_ENABLE();
+
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;
+	GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;        //I2C pins must be open-drain
+	GPIO_InitStruct.Pull = GPIO_PULLUP;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+	GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;      //connect the pins to I2C1
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+	hi2c1.Instance = I2C1;
+	hi2c1.Init.Timing = 0x00000E14;
+	hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+	HAL_I2C_Init(&hi2c1);
+}
+
+
+
+void fiveWaySwitchInit(void) {
+	uint8_t command = 0x02;
+	HAL_I2C_Master_Transmit(&hi2c1, SWITCH_I2C_ADDR, &command, 1, 100);
+}
+
+//returns which key (0 to 4) was clicked, or -1 if nothing was clicked
+int readFiveWaySwitch(void) {
+	uint8_t command = 0x01;   //"give me your events"
+	uint8_t data[9];
+
+	if (HAL_I2C_Master_Transmit(&hi2c1, SWITCH_I2C_ADDR, &command, 1, 100) != HAL_OK) {
+		return -1;
+	}
+	if (HAL_I2C_Master_Receive(&hi2c1, SWITCH_I2C_ADDR, data, 9, 100) != HAL_OK) {
+		return -1;
+	}
+
+	if ((data[3] & 0x80) == 0) {
+		return -1;   //no event happened
+	}
+
+	for (int i = 0; i < 5; i++) {
+		if (data[4 + i] & 0x02) {
+			return i;   //bit 1 = single click on key i
+		}
+	}
+	return -1;
+}
+
+
+
+void displayLaserBar(void) {
+	ssd1306_Fill(Black); //clear old image
+	ssd1306_DrawRectangle(0, 40, 101, 50, White); //outline
+	if (laserCharge > 0) {
+		ssd1306_FillRectangle(1, 41, laserCharge * 10, 49, White);  //fill: 10 px per charge unit
+	}
+	ssd1306_UpdateScreen();    //send to the display
 }
 //LED2 IS PB14
 
@@ -294,6 +365,7 @@ void readTPHSensorData(float* tempData, float* pressureData, float* humidityData
 	*humidityData = BSP_HSENSOR_ReadHumidity();   //humidity data in %rh
 }
 
+
 int main(void)
 {
 
@@ -305,6 +377,7 @@ int main(void)
 	MX_GPIO_Init();
 	UART1_Init();
 
+
 	/* Peripheral initializations using BSP functions */
 
 	BSP_ACCELERO_Init();
@@ -314,6 +387,10 @@ int main(void)
 	BSP_PSENSOR_Init();
 	BSP_HSENSOR_Init();
 	BSP_LED_Init(LED2);
+
+	I2C1_Init();
+	ssd1306_Init();
+	fiveWaySwitchInit();
 
 	//find lower and upper bound for pressure
 	float groundPressure = measurePressure();
@@ -342,7 +419,10 @@ int main(void)
 	uint32_t buttonPressResult;
 	while (1)
 	{
-
+		int key = readFiveWaySwitch();
+			if (key != -1) {
+				printf("Key pressed: %d\r\n", key);
+			}
 		tickStart = HAL_GetTick();  //milliseconds
 
 		//process button press and LED flash rate
@@ -379,6 +459,7 @@ int main(void)
 				if(buttonPressResult == 1) {
 					chargeLaser();
 					shootLaser();
+					displayLaserBar();
 				}
 				if (buttonPressResult == 2) {
 					printf("STANDBY MODE\r\n");
