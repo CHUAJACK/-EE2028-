@@ -215,34 +215,34 @@ static void I2C1_Init(void)
 
 
 
-void fiveWaySwitchInit(void) {
-	uint8_t command = 0x02;
-	HAL_I2C_Master_Transmit(&hi2c1, SWITCH_I2C_ADDR, &command, 1, 100);
-}
+//void fiveWaySwitchInit(void) {
+//	uint8_t command = 0x02;
+//	HAL_I2C_Master_Transmit(&hi2c1, SWITCH_I2C_ADDR, &command, 1, 100);
+//}
 
 //returns which key (0 to 4) was clicked, or -1 if nothing was clicked
-int readFiveWaySwitch(void) {
-	uint8_t command = 0x01;   //"give me your events"
-	uint8_t data[9];
-
-	if (HAL_I2C_Master_Transmit(&hi2c1, SWITCH_I2C_ADDR, &command, 1, 100) != HAL_OK) {
-		return -1;
-	}
-	if (HAL_I2C_Master_Receive(&hi2c1, SWITCH_I2C_ADDR, data, 9, 100) != HAL_OK) {
-		return -1;
-	}
-
-	if ((data[3] & 0x80) == 0) {
-		return -1;   //no event happened
-	}
-
-	for (int i = 0; i < 5; i++) {
-		if (data[4 + i] & 0x02) {
-			return i;   //bit 1 = single click on key i
-		}
-	}
-	return -1;
-}
+//int readFiveWaySwitch(void) {
+//	uint8_t command = 0x01;   //"give me your events"
+//	uint8_t data[9];
+//
+//	if (HAL_I2C_Master_Transmit(&hi2c1, SWITCH_I2C_ADDR, &command, 1, 100) != HAL_OK) {
+//		return -1;
+//	}
+//	if (HAL_I2C_Master_Receive(&hi2c1, SWITCH_I2C_ADDR, data, 9, 100) != HAL_OK) {
+//		return -1;
+//	}
+//
+//	if ((data[3] & 0x80) == 0) {
+//		return -1;   //no event happened
+//	}
+//
+//	for (int i = 0; i < 5; i++) {
+//		if (data[4 + i] & 0x02) {
+//			return i;   //bit 1 = single click on key i
+//		}
+//	}
+//	return -1;
+//}
 
 
 
@@ -373,8 +373,7 @@ void readTPHSensorData(float* tempData, float* pressureData, float* humidityData
 	*humidityData = BSP_HSENSOR_ReadHumidity();   //humidity data in %rh
 }
 
-<<<<<<< HEAD
-=======
+
 void buzzerToggleTask(uint8_t toggleBuzzer){
 	static uint8_t buzzerState = 0;
 	static uint32_t lastBuzzerToggleTime = 0;
@@ -444,7 +443,7 @@ void doubleBeepTask(uint8_t toggleBuzzer){
 	}
 
 }
->>>>>>> 15e2262436ed6717954ac910f369fc687b524a0f
+
 
 int main(void)
 {
@@ -470,7 +469,7 @@ int main(void)
 
 	I2C1_Init();
 	ssd1306_Init();
-	fiveWaySwitchInit();
+//	fiveWaySwitchInit();
 
 	//find lower and upper bound for pressure
 	float groundPressure = measurePressure();
@@ -499,10 +498,10 @@ int main(void)
 	uint32_t buttonPressResult;
 	while (1)
 	{
-		int key = readFiveWaySwitch();
-			if (key != -1) {
-				printf("Key pressed: %d\r\n", key);
-			}
+//		int key = readFiveWaySwitch();
+//			if (key != -1) {
+//				printf("Key pressed: %d\r\n", key);
+//			}
 		tickStart = HAL_GetTick();  //milliseconds
 		buzzerToggleTask(0);
 		doubleBeepTask(0);
