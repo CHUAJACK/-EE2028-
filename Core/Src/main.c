@@ -63,6 +63,7 @@ void shootLaser() {
 	char messageToUART[60];
 	sprintf(messageToUART, "Laser Fired! energy: %d/10\r\n", laserCharge);
 	sendUART(messageToUART);
+	buzzerToggleTask(1);
 }
 
 //-----------LASERRRRRRRRRR----------//
@@ -103,8 +104,7 @@ int checkOneSensor(char *name, float reading, float low, float high, char *unit)
 	char messageToUART[100];
 	if (reading > high) {
 //		printf("%s: %.2f (%s), exceeds threshold of %.2f (%s).\r\n", name, reading, unit, high, unit);
-		sprintf(messageToUART, "%s: %.2f (%s), exceeds threshold of %.2f (%s).\r\n",name, reading, unit, high, unit);
-	}
+		sprintf(messageToUART, "%s: %.2f (%s), exceeds threshold of %.2f (%s).\r\n",name, reading, unit, high, unit);}
 	else if (reading < low) {
 //		printf("%s: %.2f (%s), is below threshold of %.2f (%s).\r\n", name, reading, unit, low, unit);
 		sprintf(messageToUART, "%s: %.2f (%s), is below threshold of %.2f (%s).\r\n",name, reading, unit, low, unit);
@@ -119,7 +119,6 @@ void sendUART(char* message){
 	uint16_t messageSize=strlen(message);
 	HAL_UART_Transmit(&huart1, (uint8_t*)message, messageSize,0xFFFF);
 }
-
 
 //checks all six sensors
 int determineSensorValidity(float temperature, float pressure, float humidity, float accel, float gyro, float magneto)
@@ -196,6 +195,15 @@ static void MX_GPIO_Init(void){
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
 	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 	HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	//BUZZER GPIO OUTPUT PA4
+	GPIO_InitTypeDef GPIO_InitStruct_BUZZER = {0};
+	GPIO_InitStruct_BUZZER.Pin = ARD_D7_Pin;
+	GPIO_InitStruct_BUZZER.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct_BUZZER.Pull = GPIO_NOPULL;
+	HAL_GPIO_Init(ARD_D7_GPIO_Port, &GPIO_InitStruct_BUZZER);
+
 }
 
 uint32_t buttonPressCount;
@@ -294,6 +302,76 @@ void readTPHSensorData(float* tempData, float* pressureData, float* humidityData
 	*humidityData = BSP_HSENSOR_ReadHumidity();   //humidity data in %rh
 }
 
+void buzzerToggleTask(uint8_t toggleBuzzer){
+	static uint8_t buzzerState = 0;
+	static uint32_t lastBuzzerToggleTime = 0;
+	uint32_t currentTick = HAL_GetTick();
+
+	if (buzzerState == 0 && toggleBuzzer == 1){
+		HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 1);  //switch to high
+		lastBuzzerToggleTime = currentTick;
+		buzzerState = 1;
+	} else if (currentTick-lastBuzzerToggleTime > 500){
+		HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 0);  //switch to low
+		lastBuzzerToggleTime = currentTick;
+		buzzerState = 0;
+	}
+}
+
+void doubleBeepTask(uint8_t toggleBuzzer){
+	static uint8_t buzzerState = 0; //1 is short high 2 is short low 3 is short high 0
+	static uint32_t lastBuzzerToggleTime = 0;
+	static uint32_t firstBuzzerToggleTime = 0;
+	uint32_t currentTick = HAL_GetTick();
+	static uint8_t active = 0;
+	if (buzzerState == 0 && toggleBuzzer == 1){
+		HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 1);  //switch to high
+		lastBuzzerToggleTime = currentTick;
+		firstBuzzerToggleTime = lastBuzzerToggleTime;
+		buzzerState = 1;
+		active = 1;
+	}
+	if (toggleBuzzer == 3){
+		active = 0;
+		HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 0);  //switch to low
+		buzzerState = 0;
+	}
+	if (active == 1){
+		switch (buzzerState){
+		case 1:
+			if (currentTick-lastBuzzerToggleTime >= 150){
+				HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 0);  //switch to low
+				lastBuzzerToggleTime = currentTick;
+				buzzerState = 2;
+			}
+			break;
+		case 2:
+			if (currentTick-lastBuzzerToggleTime >= 50){
+				HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 1);  //switch to high
+				lastBuzzerToggleTime = currentTick;
+				buzzerState = 3;
+			}
+			break;
+		case 3:
+			if (currentTick-lastBuzzerToggleTime >= 150){
+				HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 0);  //switch to low
+				lastBuzzerToggleTime = currentTick;
+				buzzerState = 4;
+			}
+			break;
+		case 4:
+			if (currentTick-firstBuzzerToggleTime >= 1000){
+				HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 1);  //switch to high
+				lastBuzzerToggleTime = currentTick;
+				buzzerState = 1;
+				firstBuzzerToggleTime = currentTick;
+			}
+			break;
+		}
+	}
+
+}
+
 int main(void)
 {
 
@@ -344,7 +422,8 @@ int main(void)
 	{
 
 		tickStart = HAL_GetTick();  //milliseconds
-
+		buzzerToggleTask(0);
+		doubleBeepTask(0);
 		//process button press and LED flash rate
 		ledLastToggleTime = processLEDBlinkRate(droneMode, tickStart, ledLastToggleTime);
 		buttonPressResult = processButton(tickStart);
@@ -389,13 +468,17 @@ int main(void)
 					droneMode=battleTheLastOf2028;
 					lastOf2028StartTick=tickStart;
 					sendUART("Drone is under attack! entering last of 2028 mode\n");
+					doubleBeepTask(1);
 					continue;
 				}
 			} else {
 				//last of 2028 drone mode
+
 				if (tickStart-lastOf2028StartTick > 10000){
 					sendUART("Kaboom!");
-					droneMode=destroyed;break;
+					doubleBeepTask(3);
+					droneMode=destroyed;
+					break;
 				}
 				if (tickStart-lastOf2028PrintTick > 1000){
 					uint32_t lastOf2028PrintNo = 10;
@@ -405,7 +488,13 @@ int main(void)
 					sendUART(messageToUART);
 				}
 
-				if (buttonPressResult == 2) {droneMode=battle;continue;sendUART("Drone is Rescued.. returning to battle mode");}
+				if (buttonPressResult == 2) {
+					droneMode=battle;
+					sendUART("Drone is Rescued.. returning to battle mode");
+					doubleBeepTask(3);
+					continue;
+
+				}
 			}
 		}
 	}
