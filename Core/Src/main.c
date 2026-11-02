@@ -159,7 +159,7 @@ typedef enum {
 	battleTheLastOf2028 = 2,   //implicitly used as led blink rate
 	destroyed = 100
 } droneModes;
-
+droneModes droneMode;
 
 static void UART1_Init(void)
 {
@@ -245,16 +245,54 @@ static void I2C1_Init(void)
 //}
 
 
+//-----------OLED DISPLAY----------//
 
-void displayLaserBar(void) {
-	ssd1306_Fill(Black); //clear old image
-	ssd1306_DrawRectangle(0, 40, 101, 50, White); //outline
-	if (laserCharge > 0) {
-		ssd1306_FillRectangle(1, 41, laserCharge * 10, 49, White);  //fill: 10 px per charge unit
+void drawSensorStatusPage(void) {
+	ssd1306_SetCursor(0, 0);
+	ssd1306_WriteString("STANDBY", Font_6x8, White);
+	for (int i = 0; i < 6; i++) {
+		int column = i % 3;          //0, 1, 2, 0, 1, 2
+		int row = i / 3;             //0, 0, 0, 1, 1, 1
+		int x = column * 43;
+		int y = 14 + row * 25;
+		if (sensorOutOfRange[i] == 1) {
+			//out of threshold: solid box, black text
+			ssd1306_FillRectangle(x, y, x + 40, y + 22, White);
+			ssd1306_SetCursor(x + 6, y + 7);
+			ssd1306_WriteString(sensorLabels[i], Font_7x10, Black);
+		} else {
+			//within threshold: outline only, white text
+			ssd1306_DrawRectangle(x, y, x + 40, y + 22, White);
+			ssd1306_SetCursor(x + 6, y + 7);
+			ssd1306_WriteString(sensorLabels[i], Font_7x10, White);
+		}
 	}
-	ssd1306_UpdateScreen();    //send to the display
 }
-//LED2 IS PB14
+void drawLaserPage(void) {
+	char line[22];
+	ssd1306_SetCursor(0, 0);
+	ssd1306_WriteString("BATTLE - LASER", Font_6x8, White);
+	sprintf(line, "Energy: %d/10", laserCharge);
+	ssd1306_SetCursor(0, 20);
+	ssd1306_WriteString(line, Font_7x10, White);
+	ssd1306_DrawRectangle(0, 40, 101, 50, White);
+	if (laserCharge > 0) {
+		ssd1306_FillRectangle(1, 41, laserCharge * 10, 49, White);
+	}
+}
+
+void updateDisplay(void) {
+	ssd1306_Fill(Black);
+	if (droneMode == standby) {
+		drawSensorStatusPage();
+	} else {
+		drawLaserPage();    //battle and Last of EE2028
+	}
+	ssd1306_UpdateScreen();
+}
+
+
+//-----------OLED DISPLAY----------//
 
 
 static void MX_GPIO_Init(void){
@@ -280,7 +318,7 @@ static void MX_GPIO_Init(void){
 uint32_t buttonPressCount;
 uint32_t buttonPressCount = 0;
 uint32_t buttonLastPress;
-droneModes droneMode;
+
 
 // callback for button
 HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
@@ -307,7 +345,7 @@ uint32_t processButton(uint32_t currentTick){
 		return 1;
 	}
 	//if its pressed twice, process it immediately
-	if (buttonPressCount == 2){
+	if (buttonPressCount >= 2){
 		buttonPressCount = 0;
 		return 2;
 	}
@@ -455,7 +493,7 @@ int main(void)
 	HAL_Init();
 	MX_GPIO_Init();
 	UART1_Init();
-
+	sendUART("STANDBY MODE\r\n");
 
 	/* Peripheral initializations using BSP functions */
 
@@ -469,7 +507,7 @@ int main(void)
 
 	I2C1_Init();
 	ssd1306_Init();
-//	fiveWaySwitchInit();
+	updateDisplay();
 
 	//find lower and upper bound for pressure
 	float groundPressure = measurePressure();
@@ -490,19 +528,21 @@ int main(void)
 	uint32_t lastImuTick=HAL_GetTick();
 	uint32_t lastOf2028StartTick = 0;
 	uint32_t lastOf2028PrintTick = 0;
-
 	uint32_t lastSensorTimeTick = HAL_GetTick();
 	uint32_t ledLastToggleTime = HAL_GetTick();
 	uint32_t tickStart;
-
+	uint32_t lastDisplayTick = HAL_GetTick();
 	uint32_t buttonPressResult;
+
 	while (1)
 	{
-//		int key = readFiveWaySwitch();
-//			if (key != -1) {
-//				printf("Key pressed: %d\r\n", key);
-//			}
 		tickStart = HAL_GetTick();  //milliseconds
+
+		//flashes every 1s
+		if (tickStart - lastDisplayTick >= 1000) {
+			updateDisplay();
+			lastDisplayTick = tickStart;
+		}
 		buzzerToggleTask(0);
 		doubleBeepTask(0);
 		//process button press and LED flash rate
@@ -524,7 +564,7 @@ int main(void)
 			droneMode=battle;continue;
 		}
 
-		if ((tickStart-lastSensorTimeTick)>=500){
+		if ((tickStart-lastSensorTimeTick)>=1000){
 				readTPHSensorData(&tempData, &pressureData, &humidityData);
 				//converts x y z values to a single vector
 				float accelTotal = sqrtf(accelG[0]*accelG[0] + accelG[1]*accelG[1] + accelG[2]*accelG[2]);
@@ -539,7 +579,6 @@ int main(void)
 				if(buttonPressResult == 1) {
 					chargeLaser();
 					shootLaser();
-					displayLaserBar();
 				}
 				if (buttonPressResult == 2) {
 					printf("STANDBY MODE\r\n");
@@ -580,6 +619,7 @@ int main(void)
 			}
 		}
 	}
+	   ssd1306_SetDisplayOn(0);   //terminate the display
 	while (1){
 	}
 
