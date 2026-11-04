@@ -1,2 +1,4 @@
 Debug/
 Binaries
+host/.venv/
+__pycache__/

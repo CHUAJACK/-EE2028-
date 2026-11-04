@@ -19,25 +19,28 @@
 #include "string.h"
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
+#include "ble_drone.h"
 
+#define BLE_STATUS_PERIOD_MS 250   //how often mode + orientation are sent over bluetooth
 
-
-
-#define MG_TO_GMS2 9.8/1000.0f
+#define MG_TO_GMS2 (9.8f/1000.0f)
 #define BUTTON_DOUBLE_PRESS_TIME 500
 #define SWITCH_I2C_ADDR   (0x03 << 1)   //5-way switch I2C address
 #define KEY_LEFT   1
 #define KEY_RIGHT  3
 #define M_KP	8.0
 #define M_KI 	0.05
-#define MDPS_TO_RADS 2*3.1415926535/180000.0f
+#define MDPS_TO_RADS (3.1415926535f/180000.0f)   //milli-degrees/s to rad/s
 #define GYRO_CALIBRATE_COUNT 20
 #define IMU_PERIOD_MS 20
+#define LAST_OF_2028_TIME_MS 10000   //time to rescue the drone before it self destructs
 
 #include "mahony.h"  //include is placed here to use the define macro for gravity
 
 extern void initialise_monitor_handles(void);	// for semi-hosting support (printf)
 static void MX_GPIO_Init(void);
+void sendUART(char* message);
+void buzzerToggleTask(uint8_t toggleBuzzer);
 
 //-----------LASERRRRRRRRRR----------//
 #define LASER_CHARGE_PER_PRESS 3
@@ -57,10 +60,14 @@ void chargeLaser() {
 	sendUART(messageToUART);
 }
 
-void shootLaser() {
+//returns 1 if the laser fired, 0 if there was not enough charge
+int shootLaser() {
 	if (laserCharge < LASER_COST) {
 		printf("Insufficient power! energy: %d/10\r\n", laserCharge);
-		return;
+		char messageToUART[60];
+		sprintf(messageToUART, "Insufficient power! energy: %d/10\r\n", laserCharge);
+		sendUART(messageToUART);
+		return 0;
 	} else {
 		laserCharge -= LASER_COST;
 	}
@@ -69,6 +76,7 @@ void shootLaser() {
 	sprintf(messageToUART, "Laser Fired! energy: %d/10\r\n", laserCharge);
 	sendUART(messageToUART);
 	buzzerToggleTask(1);
+	return 1;
 }
 
 //-----------LASERRRRRRRRRR----------//
@@ -85,8 +93,8 @@ void shootLaser() {
 #define ACCEL_LOW      0.5f
 #define ACCEL_HIGH     2.0f
 //rotation in rads-1: above 250 dps = drone is tumbling
-#define GYRO_LOW       0.0f * MDPS_TO_RADS
-#define GYRO_HIGH       250000.0f * MDPS_TO_RADS
+#define GYRO_LOW       (0.0f * MDPS_TO_RADS)
+#define GYRO_HIGH      (250000.0f * MDPS_TO_RADS)
 //magnetic field in gauss: Earth's field is about 0.25 to 0.65 gauss
 #define MAGNETO_LOW    0.20f
 #define MAGNETO_HIGH   2.50f
@@ -277,16 +285,28 @@ static void MX_GPIO_Init(void){
 
 }
 
-uint32_t buttonPressCount;
-uint32_t buttonPressCount = 0;
-uint32_t buttonLastPress;
+volatile uint32_t buttonPressCount = 0;   //changed in the button interrupt
+volatile uint32_t buttonLastPress;
 droneModes droneMode;
 
-// callback for button
-HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+// callback for all EXTI interrupts: the button and the bluetooth module's IRQ line
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-	buttonPressCount +=1;
-	buttonLastPress = HAL_GetTick();
+	if (GPIO_Pin == SPBTLE_RF_IRQ_EXTI6_Pin) {
+		BLE_IrqHandler();   //bluetooth module has data for us
+	} else if (GPIO_Pin == BUTTON_EXTI13_Pin) {
+		buttonPressCount +=1;
+		buttonLastPress = HAL_GetTick();
+	}
+}
+
+//packs sensorOutOfRange[] into bits (bit0 T, bit1 P, bit2 H, bit3 A, bit4 G, bit5 M)
+uint8_t sensorViolationMask(void) {
+	uint8_t mask = 0;
+	for (int i = 0; i < 6; i++) {
+		if (sensorOutOfRange[i]) mask |= (1 << i);
+	}
+	return mask;
 }
 
 float measurePressure() {
@@ -306,8 +326,8 @@ uint32_t processButton(uint32_t currentTick){
 		buttonPressCount = 0;
 		return 1;
 	}
-	//if its pressed twice, process it immediately
-	if (buttonPressCount == 2){
+	//if its pressed twice (or more, e.g. while the loop was busy), process it immediately
+	if (buttonPressCount >= 2){
 		buttonPressCount = 0;
 		return 2;
 	}
@@ -354,6 +374,7 @@ void processMahonyFilter(mahony_t* mahonyFilter, float accelG[3], float magnetoD
 			gyroBias[0]/=GYRO_CALIBRATE_COUNT;gyroBias[1]/=GYRO_CALIBRATE_COUNT;gyroBias[2]/=GYRO_CALIBRATE_COUNT;
 			lastImuTick = HAL_GetTick();
 		}
+		return;   //still calibrating: the bias is only a partial sum and dt is not valid yet
 	}
 	gyroDataRadS[0]-=gyroBias[0];
 	gyroDataRadS[1]-=gyroBias[1];
@@ -383,7 +404,7 @@ void buzzerToggleTask(uint8_t toggleBuzzer){
 		HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 1);  //switch to high
 		lastBuzzerToggleTime = currentTick;
 		buzzerState = 1;
-	} else if (currentTick-lastBuzzerToggleTime > 500){
+	} else if (buzzerState == 1 && currentTick-lastBuzzerToggleTime > 500){   //only end a beep this task started
 		HAL_GPIO_WritePin(ARD_D7_GPIO_Port, ARD_D7_Pin, 0);  //switch to low
 		lastBuzzerToggleTime = currentTick;
 		buzzerState = 0;
@@ -474,7 +495,21 @@ int main(void)
 	//find lower and upper bound for pressure
 	float groundPressure = measurePressure();
 	pressureLow  = groundPressure - PRESSURE_DROP_FOR_MAX_HEIGHT;
-	pressureHigh = groundPressure + PRESSURE_RISE_FOR_MIN_HEIGHT;	
+	pressureHigh = groundPressure + PRESSURE_RISE_FOR_MIN_HEIGHT;
+
+	//start bluetooth; if it fails the drone still runs, just without telemetry over BLE
+	char bleMessage[80];
+	int bleError = BLE_Init();
+	if (bleError == 0) {
+		char bleAddress[18];
+		BLE_GetAddress(bleAddress);
+		sprintf(bleMessage, "Bluetooth ready, advertising as %s (%s)\r\n", BLE_DEVICE_NAME, bleAddress);
+	} else {
+		sprintf(bleMessage, "Bluetooth init failed at step %d, continuing without BLE\r\n", bleError);
+	}
+	printf("%s", bleMessage);
+	sendUART(bleMessage);
+	BLE_UpdateLaser(laserCharge, LASER_MAX, LASER_COST, BLE_LASER_EVT_NONE);
 
 	mahony_t mahonyFilter;
 
@@ -489,10 +524,11 @@ int main(void)
 
 	uint32_t lastImuTick=HAL_GetTick();
 	uint32_t lastOf2028StartTick = 0;
-	uint32_t lastOf2028PrintTick = 0;
+	int lastCountdownShown = -1;   //last "self destructing in ..." number sent
 
 	uint32_t lastSensorTimeTick = HAL_GetTick();
 	uint32_t ledLastToggleTime = HAL_GetTick();
+	uint32_t lastBleStatusTick = HAL_GetTick();
 	uint32_t tickStart;
 
 	uint32_t buttonPressResult;
@@ -516,6 +552,13 @@ int main(void)
 			lastImuTick = tickStart;
 		}
 
+		//bluetooth: handle connect/disconnect, and send mode + orientation in every mode
+		BLE_Process();
+		if ((tickStart - lastBleStatusTick) >= BLE_STATUS_PERIOD_MS) {
+			BLE_UpdateStatus((uint8_t)droneMode, roll, pitch, yaw);
+			lastBleStatusTick = tickStart;
+		}
+
 		if (droneMode == standby) {
 		if (buttonPressResult == 2) {
 			//transition to battle mode
@@ -532,14 +575,17 @@ int main(void)
 				float magnetoTotal = sqrtf((float)magnetoDataFloat[0]*magnetoDataFloat[0] + (float)magnetoDataFloat[1]*magnetoDataFloat[1] + (float)magnetoDataFloat[2]*magnetoDataFloat[2]) / 1000;
 				//checks the sensor validity
 				determineSensorValidity(tempData, pressureData, humidityData, accelTotal, gyroTotal, magnetoTotal);
+				//publish the same readings over bluetooth (standby only)
+				BLE_UpdateSensors(tempData, pressureData, humidityData, accelTotal, gyroTotal, magnetoTotal, sensorViolationMask());
 				lastSensorTimeTick = HAL_GetTick();  //update last tick
 		}
 		} else{
 			if (droneMode == battle){
 				if(buttonPressResult == 1) {
 					chargeLaser();
-					shootLaser();
+					int fired = shootLaser();
 					displayLaserBar();
+					BLE_UpdateLaser(laserCharge, LASER_MAX, LASER_COST, fired ? BLE_LASER_EVT_FIRED : BLE_LASER_EVT_NO_POWER);
 				}
 				if (buttonPressResult == 2) {
 					printf("STANDBY MODE\r\n");
@@ -549,30 +595,35 @@ int main(void)
 				if (roll > 120 || roll < -120) {
 					droneMode=battleTheLastOf2028;
 					lastOf2028StartTick=tickStart;
-					sendUART("Drone is under attack! entering last of 2028 mode\n");
+					lastCountdownShown = -1;
+					sendUART("Drone is under attack! entering last of 2028 mode\r\n");
 					doubleBeepTask(1);
 					continue;
 				}
 			} else {
 				//last of 2028 drone mode
 
-				if (tickStart-lastOf2028StartTick > 10000){
-					sendUART("Kaboom!");
+				if (tickStart-lastOf2028StartTick > LAST_OF_2028_TIME_MS){
+					BLE_UpdateStatus((uint8_t)droneMode, roll, pitch, yaw);   //last update: tell the laptop
+					BLE_Shutdown();   //then switch bluetooth off for good
+					sendUART("Bluetooth switched off\r\n");
+					sendUART("Kaboom!\r\n");
 					doubleBeepTask(3);
 					droneMode=destroyed;
 					break;
 				}
-				if (tickStart-lastOf2028PrintTick > 1000){
-					uint32_t lastOf2028PrintNo = 10;
-					lastOf2028PrintTick = tickStart;
+				//count down 10, 9, ... 1: one message each time the whole seconds left change
+				int secondsLeft = (int)((LAST_OF_2028_TIME_MS - (tickStart - lastOf2028StartTick)) / 1000);
+				if (secondsLeft > 0 && secondsLeft != lastCountdownShown){
+					lastCountdownShown = secondsLeft;
 					char messageToUART[60];
-					sprintf(messageToUART, "Drone is self destructing in ...%d\n", lastOf2028PrintNo);
+					sprintf(messageToUART, "Drone is self destructing in ...%d\r\n", secondsLeft);
 					sendUART(messageToUART);
 				}
 
 				if (buttonPressResult == 2) {
 					droneMode=battle;
-					sendUART("Drone is Rescued.. returning to battle mode");
+					sendUART("Drone is Rescued.. returning to battle mode\r\n");
 					doubleBeepTask(3);
 					continue;
 
