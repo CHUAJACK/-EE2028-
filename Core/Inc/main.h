@@ -31,16 +31,26 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdint.h>
 
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+typedef enum {
+	standby = 0 ,
+	battle 	= 1,
+	battleTheLastOf2028 = 2,   //implicitly used as led blink rate
+	destroyed = 100
+} droneModes;
 
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
 /* USER CODE BEGIN EC */
+#define LASER_CHARGE_PER_PRESS 3
+#define LASER_MAX 10
+#define LASER_COST 5
 
 /* USER CODE END EC */
 
@@ -53,6 +63,10 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
+extern droneModes droneMode;   //current drone mode (defined in main.c)
+extern int laserCharge;         //current laser energy, 0 to LASER_MAX (defined in main.c)
+
+void sendUART(char* message);   //sends a string out over UART1
 
 /* USER CODE END EFP */
 

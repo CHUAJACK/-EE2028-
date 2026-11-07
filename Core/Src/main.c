@@ -20,6 +20,8 @@
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
 #include "ble_drone.h"
+#include "sensors.h"
+#include "display.h"
 
 #define BLE_STATUS_PERIOD_MS 250   //how often mode + orientation are sent over bluetooth
 
@@ -30,8 +32,6 @@
 #define KEY_RIGHT  3
 #define M_KP	8.0
 #define M_KI 	0.05
-#define MDPS_TO_RADS (3.1415926535f/180000.0f)   //milli-degrees/s to rad/s
-#define GYRO_CALIBRATE_COUNT 20
 #define IMU_PERIOD_MS 20
 #define LAST_OF_2028_TIME_MS 10000   //time to rescue the drone before it self destructs
 
@@ -39,15 +39,11 @@
 
 extern void initialise_monitor_handles(void);	// for semi-hosting support (printf)
 static void MX_GPIO_Init(void);
-void sendUART(char* message);
 void buzzerToggleTask(uint8_t toggleBuzzer);
 
 //-----------LASERRRRRRRRRR----------//
-#define LASER_CHARGE_PER_PRESS 3
-#define LASER_MAX 10
-#define LASER_COST 5
-
 int laserCharge = 0;
+droneModes droneMode;
 
 void chargeLaser() {
 	laserCharge += LASER_CHARGE_PER_PRESS;
@@ -81,93 +77,12 @@ int shootLaser() {
 
 //-----------LASERRRRRRRRRR----------//
 
-//-----------Determine Sensor Validity----------//
-//setting the thresholds
-//temperature in degC: safe operating range for Li-ion battery and electronics
-#define TEMP_LOW       0.0f
-#define TEMP_HIGH      45.0f
-//humidity in %RH: comfortable range for humans
-#define HUMIDITY_LOW   30.0f
-#define HUMIDITY_HIGH  70.0f
-//acceleration in g: below 0.5*9.8 = free fall, above 2*9.8 = collision
-#define ACCEL_LOW      0.5f
-#define ACCEL_HIGH     2.0f
-//rotation in rads-1: above 250 dps = drone is tumbling
-#define GYRO_LOW       (0.0f * MDPS_TO_RADS)
-#define GYRO_HIGH      (250000.0f * MDPS_TO_RADS)
-//magnetic field in gauss: Earth's field is about 0.25 to 0.65 gauss
-#define MAGNETO_LOW    0.20f
-#define MAGNETO_HIGH   2.50f
-
-
-//for pressure, the pressure difference relative to takeoff is calculated (range is -10m to 120m) because pressure differs too much 
-//pressure drops about 0.12 hPa for every metre the drone climbs, so
-#define PRESSURE_DROP_FOR_MAX_HEIGHT  14.4f
-#define PRESSURE_RISE_FOR_MIN_HEIGHT  1.2f
-
-float pressureLow;
-float pressureHigh;
-
 UART_HandleTypeDef huart1;
-
-//checks one sensor reading against its low and high limit
-//prints a message and returns 1 if the reading is out of range, otherwise returns 0
-int checkOneSensor(char *name, float reading, float low, float high, char *unit)
-{
-	char messageToUART[100];
-	if (reading > high) {
-//		printf("%s: %.2f (%s), exceeds threshold of %.2f (%s).\r\n", name, reading, unit, high, unit);
-		sprintf(messageToUART, "%s: %.2f (%s), exceeds threshold of %.2f (%s).\r\n",name, reading, unit, high, unit);}
-	else if (reading < low) {
-//		printf("%s: %.2f (%s), is below threshold of %.2f (%s).\r\n", name, reading, unit, low, unit);
-		sprintf(messageToUART, "%s: %.2f (%s), is below threshold of %.2f (%s).\r\n",name, reading, unit, low, unit);
-	}else{
-		return 0;
-	}
-	sendUART(messageToUART);
-	return 1;
-}
 
 void sendUART(char* message){
 	uint16_t messageSize=strlen(message);
 	HAL_UART_Transmit(&huart1, (uint8_t*)message, messageSize,0xFFFF);
 }
-
-//checks all six sensors
-int sensorOutOfRange[6] = {0};   //1 = out of threshold, 0 = within threshold
-char *sensorLabels[6] = {"TEMP", "PRES", "HUM", "ACC", "GYRO", "MAG"};
-int determineSensorValidity(float temperature, float pressure, float humidity, float accel, float gyro, float magneto)
-{
-	//check each sensor and remember the result (1 = out of range, 0 = OK)
-	sensorOutOfRange[0] = checkOneSensor("T", temperature, TEMP_LOW, TEMP_HIGH, "degC");
-	sensorOutOfRange[1] = checkOneSensor("P", pressure, pressureLow, pressureHigh, "hPa");
-	sensorOutOfRange[2] = checkOneSensor("H", humidity, HUMIDITY_LOW, HUMIDITY_HIGH, "%RH");
-	sensorOutOfRange[3] = checkOneSensor("A", accel, ACCEL_LOW, ACCEL_HIGH, "g");
-	sensorOutOfRange[4] = checkOneSensor("G", gyro, GYRO_LOW, GYRO_HIGH, "rad/s");
-	sensorOutOfRange[5] = checkOneSensor("M", magneto, MAGNETO_LOW, MAGNETO_HIGH, "gauss");
-	
-	//checks if there is any violations
-	int violations = sensorOutOfRange[0] + sensorOutOfRange[1] + sensorOutOfRange[2] + sensorOutOfRange[3] + sensorOutOfRange[4] + sensorOutOfRange[5];
-	if (violations == 0) {
-		char messageToUART[]="All sensor readings are normal.\r\n";
-		sendUART(messageToUART);
-	}
-	return violations;
-}
-
-//-----------Determine Sensor Validity----------//
-
-float roll;
-float pitch;
-float yaw;
-
-typedef enum {
-	standby = 0 ,
-	battle 	= 1,
-	battleTheLastOf2028 = 2,   //implicitly used as led blink rate
-	destroyed = 100
-} droneModes;
-droneModes droneMode;
 
 static void UART1_Init(void)
 {
@@ -253,54 +168,6 @@ static void I2C1_Init(void)
 //}
 
 
-//-----------OLED DISPLAY----------//
-
-void drawSensorStatusPage(void) {
-	ssd1306_SetCursor(0, 0);
-	ssd1306_WriteString("STANDBY", Font_6x8, White);
-	for (int i = 0; i < 6; i++) {
-		int column = i % 3;          //0, 1, 2, 0, 1, 2
-		int row = i / 3;             //0, 0, 0, 1, 1, 1
-		int x = column * 43;
-		int y = 14 + row * 25;
-		if (sensorOutOfRange[i] == 1) {
-			//out of threshold: solid box, black text
-			ssd1306_FillRectangle(x, y, x + 40, y + 22, White);
-			ssd1306_SetCursor(x + 6, y + 7);
-			ssd1306_WriteString(sensorLabels[i], Font_7x10, Black);
-		} else {
-			//within threshold: outline only, white text
-			ssd1306_DrawRectangle(x, y, x + 40, y + 22, White);
-			ssd1306_SetCursor(x + 6, y + 7);
-			ssd1306_WriteString(sensorLabels[i], Font_7x10, White);
-		}
-	}
-}
-void drawLaserPage(void) {
-	char line[22];
-	ssd1306_SetCursor(0, 0);
-	ssd1306_WriteString("BATTLE - LASER", Font_6x8, White);
-	sprintf(line, "Energy: %d/10", laserCharge);
-	ssd1306_SetCursor(0, 20);
-	ssd1306_WriteString(line, Font_7x10, White);
-	ssd1306_DrawRectangle(0, 40, 101, 50, White);
-	if (laserCharge > 0) {
-		ssd1306_FillRectangle(1, 41, laserCharge * 10, 49, White);
-	}
-}
-
-void updateDisplay(void) {
-	ssd1306_Fill(Black);
-	if (droneMode == standby) {
-		drawSensorStatusPage();
-	} else {
-		drawLaserPage();    //battle and Last of EE2028
-	}
-	ssd1306_UpdateScreen();
-}
-
-
-//-----------OLED DISPLAY----------//
 
 
 static void MX_GPIO_Init(void){
@@ -325,7 +192,6 @@ static void MX_GPIO_Init(void){
 
 volatile uint32_t buttonPressCount = 0;   //changed in the button interrupt
 volatile uint32_t buttonLastPress;
-droneModes droneMode;
 
 // callback for all EXTI interrupts: the button and the bluetooth module's IRQ line
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
@@ -336,25 +202,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 		buttonPressCount +=1;
 		buttonLastPress = HAL_GetTick();
 	}
-}
-
-//packs sensorOutOfRange[] into bits (bit0 T, bit1 P, bit2 H, bit3 A, bit4 G, bit5 M)
-uint8_t sensorViolationMask(void) {
-	uint8_t mask = 0;
-	for (int i = 0; i < 6; i++) {
-		if (sensorOutOfRange[i]) mask |= (1 << i);
-	}
-	return mask;
-}
-
-float measurePressure() {
-	float groundPressure = 0;
-	for (int i = 0; i < 10; i++) {
-	    groundPressure = groundPressure + BSP_PSENSOR_ReadPressure();
-	    HAL_Delay(50);
-	}
-	return groundPressure / 10;
-
 }
 
 uint32_t processButton(uint32_t currentTick){
@@ -381,55 +228,6 @@ uint32_t processLEDBlinkRate(droneModes droneMode, uint32_t currentTick, uint32_
 		return currentTick;
 	}
 	return lastToggleTime;
-}
-
-void readImuMagnetometer(float accelG[3], float magnetoDataFloat[3], float gyroDataRadS[3]){
-	int16_t accel_data_i16[3] = { 0 };			// array to store the x, y and z readings.
-	BSP_ACCELERO_AccGetXYZ(accel_data_i16);		// read accelerometer
-	accelG[0] = (float)accel_data_i16[0]/1000;
-	accelG[1] = (float)accel_data_i16[1]/1000;
-	accelG[2] = (float)accel_data_i16[2]/1000;
-
-	BSP_GYRO_GetXYZ(gyroDataRadS);   //gyrodata x y z in mdps
-	gyroDataRadS[0] = (float)gyroDataRadS[0]*MDPS_TO_RADS;
-	gyroDataRadS[1] = (float)gyroDataRadS[1]*MDPS_TO_RADS;
-	gyroDataRadS[2] = (float)gyroDataRadS[2]*MDPS_TO_RADS;
-	int16_t magnetoData[3];
-	BSP_MAGNETO_GetXYZ(magnetoData); //magneto data in milligaus
-	magnetoDataFloat[0] = (float)magnetoData[0];
-	magnetoDataFloat[1] = (float)magnetoData[1];
-	magnetoDataFloat[2] = (float)magnetoData[2];
-}
-
-void processMahonyFilter(mahony_t* mahonyFilter, float accelG[3], float magnetoDataFloat[3], float gyroDataRadS[3]){
-	static uint32_t gyroBiasInitialiseCounter = 0;
-	static uint32_t lastImuTick;
-	static float gyroBias[3] = {0};
-	if (gyroBiasInitialiseCounter < GYRO_CALIBRATE_COUNT){
-		gyroBias[0]+=gyroDataRadS[0];gyroBias[1]+=gyroDataRadS[1];gyroBias[2]+=gyroDataRadS[2];
-		gyroBiasInitialiseCounter++;
-		if (gyroBiasInitialiseCounter == GYRO_CALIBRATE_COUNT){
-			gyroBias[0]/=GYRO_CALIBRATE_COUNT;gyroBias[1]/=GYRO_CALIBRATE_COUNT;gyroBias[2]/=GYRO_CALIBRATE_COUNT;
-			lastImuTick = HAL_GetTick();
-		}
-		return;   //still calibrating: the bias is only a partial sum and dt is not valid yet
-	}
-	gyroDataRadS[0]-=gyroBias[0];
-	gyroDataRadS[1]-=gyroBias[1];
-	gyroDataRadS[2]-=gyroBias[2];
-
-	uint32_t currentImuTick = HAL_GetTick();
-	float dt = (float)(((float)currentImuTick-(float)lastImuTick)/1000);
-	mahony_update(mahonyFilter, gyroDataRadS, accelG, magnetoDataFloat, dt);
-	mahony_get_euler(mahonyFilter, &roll,&pitch,&yaw);
-	lastImuTick = currentImuTick;
-
-}
-
-void readTPHSensorData(float* tempData, float* pressureData, float* humidityData){
-	*tempData = BSP_TSENSOR_ReadTemp();			// read temperature sensor
-	*pressureData = BSP_PSENSOR_ReadPressure();  //pressure reading in hectopascal
-	*humidityData = BSP_HSENSOR_ReadHumidity();   //humidity data in %rh
 }
 
 
@@ -547,7 +345,7 @@ int main(void)
 	}
 	printf("%s", bleMessage);
 	sendUART(bleMessage);
-	BLE_UpdateLaser(laserCharge, LASER_MAX, LASER_COST, BLE_LASER_EVT_NONE);
+	BLE_UpdateLaser(laserCharge, LASER_MAX, LASER_COST, LASER_CHARGE_PER_PRESS, BLE_LASER_EVT_NONE);
 
 	mahony_t mahonyFilter;
 
@@ -625,8 +423,8 @@ int main(void)
 				if(buttonPressResult == 1) {
 					chargeLaser();
 					int fired = shootLaser();
-					displayLaserBar();
-					BLE_UpdateLaser(laserCharge, LASER_MAX, LASER_COST, fired ? BLE_LASER_EVT_FIRED : BLE_LASER_EVT_NO_POWER);
+					updateDisplay();
+					BLE_UpdateLaser(laserCharge, LASER_MAX, LASER_COST, LASER_CHARGE_PER_PRESS, fired ? BLE_LASER_EVT_FIRED : BLE_LASER_EVT_NO_POWER);
 				}
 				if (buttonPressResult == 2) {
 					printf("STANDBY MODE\r\n");
