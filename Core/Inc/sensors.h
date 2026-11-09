@@ -12,19 +12,19 @@
 #define GYRO_CALIBRATE_COUNT 20
 
 //setting the thresholds
-//temperature in degC: safe operating range for Li-ion battery and electronics
-#define TEMP_LOW       0.0f
-#define TEMP_HIGH      45.0f
-//humidity in %RH: comfortable range for humans
+//temperature in degC
+#define TEMP_LOW       -20.0f
+#define TEMP_HIGH      60.0f
+//humidity in %RH
 #define HUMIDITY_LOW   30.0f
 #define HUMIDITY_HIGH  70.0f
-//acceleration in g: below 0.5*9.8 = free fall, above 2*9.8 = collision
+//acceleration in g
 #define ACCEL_LOW      0.5f
 #define ACCEL_HIGH     2.0f
-//rotation in rads-1: above 250 dps = drone is tumbling
+
 #define GYRO_LOW       (0.0f * MDPS_TO_RADS)
 #define GYRO_HIGH      (250000.0f * MDPS_TO_RADS)
-//magnetic field in gauss: Earth's field is about 0.25 to 0.65 gauss
+//magnetic field in gauss
 #define MAGNETO_LOW    0.20f
 #define MAGNETO_HIGH   2.50f
 

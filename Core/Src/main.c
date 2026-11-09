@@ -27,9 +27,9 @@
 
 #define MG_TO_GMS2 (9.8f/1000.0f)
 #define BUTTON_DOUBLE_PRESS_TIME 500
-#define SWITCH_I2C_ADDR   (0x03 << 1)   //5-way switch I2C address
-#define KEY_LEFT   1
-#define KEY_RIGHT  3
+//#define SWITCH_I2C_ADDR   (0x03 << 1)   //5-way switch I2C address
+//#define KEY_LEFT   1
+//#define KEY_RIGHT  3
 #define M_KP	8.0
 #define M_KI 	0.05
 #define IMU_PERIOD_MS 20
@@ -135,39 +135,6 @@ static void I2C1_Init(void)
 	hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
 	HAL_I2C_Init(&hi2c1);
 }
-
-
-
-//void fiveWaySwitchInit(void) {
-//	uint8_t command = 0x02;
-//	HAL_I2C_Master_Transmit(&hi2c1, SWITCH_I2C_ADDR, &command, 1, 100);
-//}
-
-//returns which key (0 to 4) was clicked, or -1 if nothing was clicked
-//int readFiveWaySwitch(void) {
-//	uint8_t command = 0x01;   //"give me your events"
-//	uint8_t data[9];
-//
-//	if (HAL_I2C_Master_Transmit(&hi2c1, SWITCH_I2C_ADDR, &command, 1, 100) != HAL_OK) {
-//		return -1;
-//	}
-//	if (HAL_I2C_Master_Receive(&hi2c1, SWITCH_I2C_ADDR, data, 9, 100) != HAL_OK) {
-//		return -1;
-//	}
-//
-//	if ((data[3] & 0x80) == 0) {
-//		return -1;   //no event happened
-//	}
-//
-//	for (int i = 0; i < 5; i++) {
-//		if (data[4 + i] & 0x02) {
-//			return i;   //bit 1 = single click on key i
-//		}
-//	}
-//	return -1;
-//}
-
-
 
 
 static void MX_GPIO_Init(void){
