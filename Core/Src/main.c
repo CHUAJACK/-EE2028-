@@ -437,7 +437,11 @@ int main(void)
 			}
 		}
 	}
-	   ssd1306_SetDisplayOn(0);   //terminate the display
+		//terminate
+		ssd1306_SetDisplayOn(0);
+		BSP_LED_Off(LED2);
+		HAL_NVIC_DisableIRQ(EXTI15_10_IRQn);
+		HAL_UART_DeInit(&huart1);
 	while (1){
 	}
 
