@@ -474,13 +474,7 @@ battle mode because sensors aren't sent there.
 
 ## 11. Known issues and gotchas
 
-1. **The DESTROYED status is never actually sent (bug).** In `main.c`, the "last update"
-   is `BLE_UpdateStatus((uint8_t)droneMode, ...)` and happens **before**
-   `droneMode = destroyed;`, so the final packet carries mode **2** (last of 2028), not
-   **100**. The dashboard only learns the drone is destroyed from mode 100, so it shows
-   *"Connection lost. Reconnecting…"* instead of the *"Drone destroyed"* message, and
-   keeps scanning. Fix: set `droneMode = destroyed;` before the last `BLE_UpdateStatus` /
-   `BLE_Shutdown()` calls (or pass `destroyed` explicitly).
+1. **The DESTROYED status is sent just before shutdown.** `main.c` sets `droneMode = destroyed` first, then sends the last `BLE_UpdateStatus` (mode 100), then calls `BLE_Shutdown()`. The dashboard uses mode 100 to show "Drone destroyed" instead of trying to reconnect. Keep that order if you edit this code.
 2. **README says sensors go out every 0.5 s; the code does 1 s.** `main.c` gates the sensor
    block on `>= 1000` ms. The header comment, this document and the code agree on 1 s;
    only the README line is off.

@@ -52,6 +52,8 @@ typedef enum {
 #define LASER_MAX 10
 #define LASER_COST 5
 
+#define LAST_OF_2028_TIME_MS 10000   //time to rescue the drone before it self destructs
+
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/
@@ -64,6 +66,7 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 extern droneModes droneMode;   //current drone mode (defined in main.c)
+extern uint32_t lastOf2028StartTick;   //tick when last of 2028 mode started (defined in main.c)
 extern int laserCharge;         //current laser energy, 0 to LASER_MAX (defined in main.c)
 
 void sendUART(char* message);   //sends a string out over UART1

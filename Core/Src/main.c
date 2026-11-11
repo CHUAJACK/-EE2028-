@@ -33,7 +33,6 @@
 #define M_KP	8.0
 #define M_KI 	0.05
 #define IMU_PERIOD_MS 20
-#define LAST_OF_2028_TIME_MS 10000   //time to rescue the drone before it self destructs
 
 #include "mahony.h"  //include is placed here to use the define macro for gravity
 
@@ -43,6 +42,7 @@ void buzzerToggleTask(uint8_t toggleBuzzer);
 
 //-----------LASERRRRRRRRRR----------//
 int laserCharge = 0;
+uint32_t lastOf2028StartTick = 0;   //tick when last of 2028 mode started (drives the countdown)
 droneModes droneMode;
 
 void chargeLaser() {
@@ -219,15 +219,15 @@ uint32_t processButton(uint32_t currentTick){
 	return 0;
 }
 // on -> off 1 period
-uint32_t processLEDBlinkRate(droneModes droneMode, uint32_t currentTick, uint32_t lastToggleTime){
+void processLEDBlinkRate(droneModes droneMode, uint32_t currentTick){
+	static uint32_t lastToggleTime = 0;   //tick of the last LED change
 	if (droneMode == 0){
 		BSP_LED_On(LED2);
-		return currentTick;
+		lastToggleTime = currentTick;
 	} else if ((currentTick-lastToggleTime)>(1000/((int)droneMode*2))){
 		BSP_LED_Toggle(LED2);
-		return currentTick;
+		lastToggleTime = currentTick;
 	}
-	return lastToggleTime;
 }
 
 
@@ -359,11 +359,9 @@ int main(void)
 	float humidityData;
 
 	uint32_t lastImuTick=HAL_GetTick();
-	uint32_t lastOf2028StartTick = 0;
 	int lastCountdownShown = -1;   //last "self destructing in ..." number sent
 
 	uint32_t lastSensorTimeTick = HAL_GetTick();
-	uint32_t ledLastToggleTime = HAL_GetTick();
 	uint32_t lastBleStatusTick = HAL_GetTick();
 	uint32_t tickStart;
 	uint32_t lastDisplayTick = HAL_GetTick();
@@ -372,7 +370,6 @@ int main(void)
 	while (1)
 	{
 		tickStart = HAL_GetTick();  //milliseconds
-
 		//flashes every 1s
 		if (tickStart - lastDisplayTick >= 1000) {
 			updateDisplay();
@@ -381,7 +378,7 @@ int main(void)
 		buzzerToggleTask(0);
 		doubleBeepTask(0);
 		//process button press and LED flash rate
-		ledLastToggleTime = processLEDBlinkRate(droneMode, tickStart, ledLastToggleTime);
+		processLEDBlinkRate(droneMode, tickStart);
 		buttonPressResult = processButton(tickStart);
 
 		//IMU reading for mahony filter
@@ -398,15 +395,16 @@ int main(void)
 			lastBleStatusTick = tickStart;
 		}
 
-		if (droneMode == standby) {
-		if (buttonPressResult == 2) {
-			//transition to battle mode
-			printf("BATTLE MODE\r\n");
-			sendUART("BATTLE MODE\r\n");
-			droneMode=battle;continue;
-		}
+		switch (droneMode) {
+		case standby: {
+			if (buttonPressResult == 2) {
+				//transition to battle mode
+				printf("BATTLE MODE\r\n");
+				sendUART("BATTLE MODE\r\n");
+				droneMode=battle;continue;
+			}
 
-		if ((tickStart-lastSensorTimeTick)>=1000){
+			if ((tickStart-lastSensorTimeTick)>=1000){
 				readTPHSensorData(&tempData, &pressureData, &humidityData);
 				//converts x y z values to a single vector
 				float accelTotal = sqrtf(accelG[0]*accelG[0] + accelG[1]*accelG[1] + accelG[2]*accelG[2]);
@@ -417,58 +415,68 @@ int main(void)
 				//publish the same readings over bluetooth (standby only)
 				BLE_UpdateSensors(tempData, pressureData, humidityData, accelTotal, gyroTotal, magnetoTotal, sensorViolationMask());
 				lastSensorTimeTick = HAL_GetTick();  //update last tick
-		}
-		} else{
-			if (droneMode == battle){
-				if(buttonPressResult == 1) {
-					chargeLaser();
-					int fired = shootLaser();
-					updateDisplay();
-					BLE_UpdateLaser(laserCharge, LASER_MAX, LASER_COST, LASER_CHARGE_PER_PRESS, fired ? BLE_LASER_EVT_FIRED : BLE_LASER_EVT_NO_POWER);
-				}
-				if (buttonPressResult == 2) {
-					printf("STANDBY MODE\r\n");
-					sendUART("STANDBY MODE\r\n");
-					droneMode=standby;continue;
-				}
-				if (roll > 120 || roll < -120) {
-					droneMode=battleTheLastOf2028;
-					lastOf2028StartTick=tickStart;
-					lastCountdownShown = -1;
-					sendUART("Drone is under attack! entering last of 2028 mode\r\n");
-					doubleBeepTask(1);
-					continue;
-				}
-			} else {
-				//last of 2028 drone mode
-
-				if (tickStart-lastOf2028StartTick > LAST_OF_2028_TIME_MS){
-					BLE_UpdateStatus((uint8_t)droneMode, roll, pitch, yaw);   //last update: tell the laptop
-					BLE_Shutdown();   //then switch bluetooth off for good
-					sendUART("Bluetooth switched off\r\n");
-					sendUART("Kaboom!\r\n");
-					doubleBeepTask(3);
-					droneMode=destroyed;
-					break;
-				}
-				//count down 10, 9, ... 1: one message each time the whole seconds left change
-				int secondsLeft = (int)((LAST_OF_2028_TIME_MS - (tickStart - lastOf2028StartTick)) / 1000);
-				if (secondsLeft > 0 && secondsLeft != lastCountdownShown){
-					lastCountdownShown = secondsLeft;
-					char messageToUART[60];
-					sprintf(messageToUART, "Drone is self destructing in ...%d\r\n", secondsLeft);
-					sendUART(messageToUART);
-				}
-
-				if (buttonPressResult == 2) {
-					droneMode=battle;
-					sendUART("Drone is Rescued.. returning to battle mode\r\n");
-					doubleBeepTask(3);
-					continue;
-
-				}
 			}
+			break;
 		}
+
+		case battle: {
+			if(buttonPressResult == 1) {
+				chargeLaser();
+				int fired = shootLaser();
+				updateDisplay();
+				BLE_UpdateLaser(laserCharge, LASER_MAX, LASER_COST, LASER_CHARGE_PER_PRESS, fired ? BLE_LASER_EVT_FIRED : BLE_LASER_EVT_NO_POWER);
+			}
+			if (buttonPressResult == 2) {
+				printf("STANDBY MODE\r\n");
+				sendUART("STANDBY MODE\r\n");
+				droneMode=standby;continue;
+			}
+			if (roll > 120 || roll < -120) {
+				droneMode=battleTheLastOf2028;
+				lastOf2028StartTick=tickStart;
+				lastCountdownShown = -1;
+				sendUART("Drone is under attack! entering last of 2028 mode\r\n");
+				doubleBeepTask(1);
+				continue;
+			}
+			break;
+		}
+
+		case battleTheLastOf2028: {
+			if (tickStart-lastOf2028StartTick > LAST_OF_2028_TIME_MS){
+				droneMode=destroyed;
+				BLE_UpdateStatus((uint8_t)droneMode, roll, pitch, yaw);   //last update: tell the laptop the drone is destroyed
+				BLE_Shutdown();   //then switch bluetooth off for good
+				sendUART("Bluetooth switched off\r\n");
+				sendUART("Kaboom!\r\n");
+				doubleBeepTask(3);
+				break;   //leaves the switch; the check below leaves the loop
+			}
+			//count down 10, 9, ... 1: one message each time the whole seconds left change
+			int secondsLeft = (int)((LAST_OF_2028_TIME_MS - (tickStart - lastOf2028StartTick)) / 1000);
+			if (secondsLeft > 0 && secondsLeft != lastCountdownShown){
+				lastCountdownShown = secondsLeft;
+				updateDisplay();   //show the new countdown number on the OLED
+				char messageToUART[60];
+				sprintf(messageToUART, "Drone is self destructing in ...%d\r\n", secondsLeft);
+				sendUART(messageToUART);
+			}
+
+			if (buttonPressResult == 2) {
+				droneMode=battle;
+				sendUART("Drone is Rescued.. returning to battle mode\r\n");
+				doubleBeepTask(3);
+				continue;
+			}
+			break;
+		}
+
+		case destroyed:
+		default:
+			break;
+		}
+
+		if (droneMode == destroyed) break;   //a break inside the switch only leaves the switch
 	}
 	   ssd1306_SetDisplayOn(0);   //terminate the display
 	while (1){

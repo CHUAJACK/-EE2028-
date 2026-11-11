@@ -33,13 +33,25 @@ void drawSensorStatusPage(void) {
 void drawLaserPage(void) {
 	char line[22];
 	ssd1306_SetCursor(0, 0);
-	ssd1306_WriteString("BATTLE - LASER", Font_6x8, White);
+	if (droneMode == battleTheLastOf2028) {
+		ssd1306_WriteString("LAST OF 2028", Font_6x8, White);
+	} else {
+		ssd1306_WriteString("BATTLE - LASER", Font_6x8, White);
+	}
 	sprintf(line, "Energy: %d/10", laserCharge);
 	ssd1306_SetCursor(0, 20);
 	ssd1306_WriteString(line, Font_7x10, White);
 	ssd1306_DrawRectangle(0, 40, 101, 50, White);
 	if (laserCharge > 0) {
 		ssd1306_FillRectangle(1, 41, laserCharge * 10, 49, White);
+	}
+	if (droneMode == battleTheLastOf2028) {
+		//seconds left before the drone self destructs
+		uint32_t elapsed = HAL_GetTick() - lastOf2028StartTick;
+		int secondsLeft = (elapsed >= LAST_OF_2028_TIME_MS) ? 0 : (int)((LAST_OF_2028_TIME_MS - elapsed) / 1000);
+		sprintf(line, "Self-destruct: %ds", secondsLeft);
+		ssd1306_SetCursor(0, 54);
+		ssd1306_WriteString(line, Font_6x8, White);
 	}
 }
 
